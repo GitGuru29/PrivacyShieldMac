@@ -5,8 +5,8 @@ import CoreVideo
 class FaceRecognizer {
     
     private var enrolledUsers: [String: [VNFeaturePrintObservation]] = [:]  // label → prints
-    private let maxEnrollmentSamples = 5
-    private let matchThreshold: Float = 0.6
+    private let maxEnrollmentSamples = 8        // More samples = better accuracy across angles
+    private let matchThreshold: Float = 0.75    // Relaxed from 0.6 — webcam quality varies
     
     private var storageDir: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!

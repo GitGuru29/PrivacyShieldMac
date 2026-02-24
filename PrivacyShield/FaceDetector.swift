@@ -11,16 +11,21 @@ class FaceDetector: NSObject, CameraManagerDelegate {
     private let shieldManager: ShieldManager
     let faceRecognizer: FaceRecognizer
     private weak var delegate: FaceDetectorDelegate?
+    
+    // Anti-glitch: separate counters for entering and exiting blur state
     private var consecutiveStranger = 0
-    private let triggerThreshold = 3
+    private var consecutiveSafe = 0
+    private let strangerThreshold = 3     // Frames before SHOWING shield
+    private let safeThreshold = 8         // Frames before HIDING shield (higher = more stable)
+    private var isShieldActive = false
+    
     private var isProcessing = false
     private var frameCounter = 0
-    private let frameSkip = 3  // Only process every Nth frame for performance
+    private let frameSkip = 3
     private var hasNotifiedStranger = false
     
     /// Minimum face size (0.0–1.0 of frame width) to trigger detection.
-    /// Faces smaller than this are too far away to read the screen and are ignored.
-    /// Default 0.25 = ~2 feet from screen.
+    /// Faces smaller than this are too far away to read the screen.
     var minFaceSize: CGFloat {
         get {
             let val = CGFloat(UserDefaults.standard.float(forKey: "minFaceSize"))
@@ -29,11 +34,14 @@ class FaceDetector: NSObject, CameraManagerDelegate {
         set { UserDefaults.standard.set(Float(newValue), forKey: "minFaceSize") }
     }
     
-    /// When true, the next frames will be used for enrollment instead of recognition
+    // Use a buffer zone: faces within 80% of the threshold are "borderline" and don't trigger changes
+    private var faceBufferRatio: CGFloat = 0.8
+    
+    /// Enrollment mode
     var isEnrolling = false
     var enrollmentCompletion: ((Bool) -> Void)?
     
-    /// Calibration mode: measures face size at a known distance to set the threshold
+    /// Calibration mode
     var isCalibrating = false
     private var calibrationSamples: [CGFloat] = []
     private let calibrationSampleCount = 10
@@ -47,16 +55,14 @@ class FaceDetector: NSObject, CameraManagerDelegate {
     }
     
     func didOutput(pixelBuffer: CVPixelBuffer) {
-        // Frame throttling — skip frames for performance
         frameCounter += 1
         guard frameCounter % frameSkip == 0 else { return }
-        
         guard !isProcessing else { return }
         isProcessing = true
         
         // Enrollment mode
         if isEnrolling {
-            let success = faceRecognizer.enrollFace(from: pixelBuffer)
+            let _ = faceRecognizer.enrollFace(from: pixelBuffer)
             if faceRecognizer.enrollmentProgress >= faceRecognizer.enrollmentTarget {
                 DispatchQueue.main.async { [weak self] in
                     self?.isEnrolling = false
@@ -68,7 +74,7 @@ class FaceDetector: NSObject, CameraManagerDelegate {
             return
         }
         
-        // Calibration mode: just measure face size
+        // Calibration mode
         if isCalibrating {
             let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
             let req = VNDetectFaceRectanglesRequest()
@@ -104,21 +110,25 @@ class FaceDetector: NSObject, CameraManagerDelegate {
             
             var strangerDetected = false
             
-            // Filter out faces that are too small (too far away to read the screen)
-            let nearbyFaces = faces.filter { $0.boundingBox.width >= minFaceSize }
+            // Filter faces by size with buffer zone to prevent glitching at the boundary
+            let softThreshold = minFaceSize * faceBufferRatio  // Inner threshold (hysteresis)
+            let nearbyFaces = faces.filter { $0.boundingBox.width >= softThreshold }
             let nearbyCount = nearbyFaces.count
             
-            if nearbyCount == 0 && count == 0 {
+            if count == 0 {
                 // No faces at all → user walked away → blur
                 strangerDetected = true
-            } else if nearbyCount == 0 && count > 0 {
-                // Faces exist but all too far away → safe, they can't read the screen
+            } else if nearbyCount == 0 {
+                // Faces exist but all far away → safe
                 strangerDetected = false
             } else if !faceRecognizer.isEnrolled {
+                // Not enrolled → only blur if multiple close faces
                 strangerDetected = nearbyCount > 1
             } else {
+                // Enrolled → check each nearby face against owner
                 for face in nearbyFaces {
-                    if !faceRecognizer.isOwner(pixelBuffer: pixelBuffer, faceRect: face.boundingBox) {
+                    let isKnown = faceRecognizer.isOwner(pixelBuffer: pixelBuffer, faceRect: face.boundingBox)
+                    if !isKnown {
                         strangerDetected = true
                         break
                     }
@@ -138,21 +148,33 @@ class FaceDetector: NSObject, CameraManagerDelegate {
     private func handleResult(strangerDetected: Bool, faceCount: Int) {
         if strangerDetected {
             consecutiveStranger += 1
-            if consecutiveStranger >= triggerThreshold {
+            consecutiveSafe = 0  // Reset safe counter
+            
+            // Only SHOW shield after sustained stranger detection
+            if !isShieldActive && consecutiveStranger >= strangerThreshold {
+                isShieldActive = true
                 shieldManager.showShield()
                 delegate?.updateMenuIcon(safe: false)
                 
-                // Send notification only once per stranger event
                 if !hasNotifiedStranger {
                     hasNotifiedStranger = true
                     delegate?.sendStrangerNotification()
                 }
             }
         } else {
-            consecutiveStranger = 0
-            hasNotifiedStranger = false
-            shieldManager.hideShield()
-            delegate?.updateMenuIcon(safe: true)
+            consecutiveSafe += 1
+            consecutiveStranger = 0  // Reset stranger counter
+            
+            // Only HIDE shield after sustained safe detection (prevents flickering)
+            if isShieldActive && consecutiveSafe >= safeThreshold {
+                isShieldActive = false
+                hasNotifiedStranger = false
+                shieldManager.hideShield()
+                delegate?.updateMenuIcon(safe: true)
+            } else if !isShieldActive {
+                // Not active, just update icon
+                delegate?.updateMenuIcon(safe: true)
+            }
         }
     }
     
