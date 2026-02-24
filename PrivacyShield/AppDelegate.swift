@@ -82,7 +82,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(resetItem)
         
         menu.addItem(NSMenuItem.separator())
-
+        
+        // Detection Range
+        let rangeMenu = NSMenu()
+        let rangeLabels: [(String, Float)] = [
+            ("Close Only (1m)", 0.20),
+            ("Medium (2m)", 0.10),
+            ("Far (3m+)", 0.05),
+        ]
+        let currentMin = UserDefaults.standard.float(forKey: "minFaceSize")
+        for (label, value) in rangeLabels {
+            let item = NSMenuItem(title: label, action: #selector(setDetectionRange(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = Int(value * 1000)
+            item.representedObject = value
+            // Mark current selection
+            let isSelected = (currentMin == 0 && value == 0.05) || abs(currentMin - value) < 0.01
+            item.state = isSelected ? .on : .off
+            rangeMenu.addItem(item)
+        }
+        let rangeItem = NSMenuItem(title: "Detection Range", action: nil, keyEquivalent: "")
+        rangeItem.submenu = rangeMenu
+        menu.addItem(rangeItem)
+        
+        menu.addItem(NSMenuItem.separator())
+        
         // Toggle
         let toggleItem = NSMenuItem(title: "Toggle Shield (⌘⇧L)", action: #selector(toggleShield), keyEquivalent: "")
         toggleItem.target = self
@@ -152,6 +176,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc func toggleShield() {
         shieldManager?.toggleShield()
+    }
+    
+    @objc func setDetectionRange(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? Float else { return }
+        faceDetector?.minFaceSize = CGFloat(value)
+        
+        // Update checkmarks
+        if let rangeMenu = sender.menu {
+            for item in rangeMenu.items {
+                item.state = (item === sender) ? .on : .off
+            }
+        }
+        
+        let label = sender.title
+        Toast.show(message: "Detection range: \(label)", duration: 1.5)
     }
     
     // MARK: - Global Hotkey (⌘⇧L)

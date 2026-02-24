@@ -18,6 +18,17 @@ class FaceDetector: NSObject, CameraManagerDelegate {
     private let frameSkip = 3  // Only process every Nth frame for performance
     private var hasNotifiedStranger = false
     
+    /// Minimum face size (0.0–1.0 of frame width) to trigger detection.
+    /// Faces smaller than this are too far away to read the screen and are ignored.
+    /// Default 0.05 = ~5% of frame width. Increase to narrow the detection range.
+    var minFaceSize: CGFloat {
+        get {
+            let val = CGFloat(UserDefaults.standard.float(forKey: "minFaceSize"))
+            return val > 0 ? val : 0.05
+        }
+        set { UserDefaults.standard.set(Float(newValue), forKey: "minFaceSize") }
+    }
+    
     /// When true, the next frames will be used for enrollment instead of recognition
     var isEnrolling = false
     var enrollmentCompletion: ((Bool) -> Void)?
@@ -62,12 +73,20 @@ class FaceDetector: NSObject, CameraManagerDelegate {
             
             var strangerDetected = false
             
-            if count == 0 {
+            // Filter out faces that are too small (too far away to read the screen)
+            let nearbyFaces = faces.filter { $0.boundingBox.width >= minFaceSize }
+            let nearbyCount = nearbyFaces.count
+            
+            if nearbyCount == 0 && count == 0 {
+                // No faces at all → user walked away → blur
                 strangerDetected = true
+            } else if nearbyCount == 0 && count > 0 {
+                // Faces exist but all too far away → safe, they can't read the screen
+                strangerDetected = false
             } else if !faceRecognizer.isEnrolled {
-                strangerDetected = count > 1
+                strangerDetected = nearbyCount > 1
             } else {
-                for face in faces {
+                for face in nearbyFaces {
                     if !faceRecognizer.isOwner(pixelBuffer: pixelBuffer, faceRect: face.boundingBox) {
                         strangerDetected = true
                         break
