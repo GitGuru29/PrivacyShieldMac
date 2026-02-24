@@ -1,35 +1,45 @@
 import Vision
 import CoreVideo
+import Foundation
 
-class FaceDetector: CameraManagerDelegate {
+class FaceDetector: NSObject, CameraManagerDelegate {
     private let shieldManager: ShieldManager
-    private var sequenceHandler = VNSequenceRequestHandler()
     private var consecutiveMultipleFaces = 0
-    private let triggerThreshold = 2 // Require multiple frames to avoid flicker
+    private let triggerThreshold = 3
+    private var isProcessing = false
     
     init(shieldManager: ShieldManager) {
         self.shieldManager = shieldManager
+        super.init()
     }
     
     func didOutput(pixelBuffer: CVPixelBuffer) {
-        let request = VNDetectFaceRectanglesRequest { [weak self] request, error in
-            guard let self = self else { return }
-            if let results = request.results as? [VNFaceObservation] {
-                DispatchQueue.main.async {
-                    self.handleFaceDetection(facesCount: results.count)
-                }
-            }
-        }
+        // Skip frame if we're still processing the previous one
+        guard !isProcessing else { return }
+        isProcessing = true
         
+        let requestHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        let request = VNDetectFaceRectanglesRequest()
+        
+        // Perform synchronously on the camera queue (we're already on a background queue)
         do {
-            try sequenceHandler.perform([request], on: pixelBuffer, orientation: .up)
+            try requestHandler.perform([request])
+            let count = (request.results as? [VNFaceObservation])?.count ?? 0
+            
+            DispatchQueue.main.async { [weak self] in
+                self?.handleFaceDetection(facesCount: count)
+                self?.isProcessing = false
+            }
         } catch {
             print("Face detection failed: \(error)")
+            isProcessing = false
         }
     }
     
     private func handleFaceDetection(facesCount: Int) {
-        if facesCount > 1 {
+        print("Faces detected: \(facesCount)")
+        
+        if facesCount != 1 {
             consecutiveMultipleFaces += 1
             if consecutiveMultipleFaces >= triggerThreshold {
                 shieldManager.showShield()

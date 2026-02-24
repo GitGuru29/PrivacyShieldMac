@@ -1,22 +1,34 @@
 import AppKit
-import Foundation
 
 class ShieldManager {
     private var windows: [NSWindow] = []
+    private var isShieldVisible = false
     
     init() {
-        setupWindows()
-        
-        NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        // Don't create windows in init - wait until they're actually needed
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screenParametersChanged),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
     
     @objc private func screenParametersChanged() {
-        setupWindows()
+        rebuildWindows()
+        if isShieldVisible {
+            showShield()
+        }
     }
     
-    private func setupWindows() {
+    private func rebuildWindows() {
+        // Close and release all existing windows
         for window in windows {
-            window.close()
+            window.orderOut(nil)
         }
         windows.removeAll()
         
@@ -25,70 +37,53 @@ class ShieldManager {
                 contentRect: screen.frame,
                 styleMask: .borderless,
                 backing: .buffered,
-                defer: false
+                defer: true // defer creation until needed
             )
             
             overlayWindow.level = NSWindow.Level(Int(CGWindowLevelForKey(.screenSaverWindow)))
             overlayWindow.backgroundColor = .clear
             overlayWindow.isOpaque = false
-            
-            // Allow user to click through the blur?
-            // If we block clicks, we secure the app, but they can't do anything until faces decrease. Let's block clicks.
             overlayWindow.ignoresMouseEvents = false
-            
             overlayWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             
-            let visualEffectView = NSVisualEffectView(frame: overlayWindow.contentView!.bounds)
+            let visualEffectView = NSVisualEffectView(frame: NSRect(origin: .zero, size: screen.frame.size))
             visualEffectView.autoresizingMask = [.width, .height]
-            visualEffectView.material = .hudWindow // Gives a nice dark blurred effect
+            visualEffectView.material = .hudWindow
             visualEffectView.blendingMode = .behindWindow
             visualEffectView.state = .active
             
-            overlayWindow.contentView?.addSubview(visualEffectView)
+            overlayWindow.contentView = visualEffectView
             
             windows.append(overlayWindow)
         }
     }
     
     func showShield() {
+        if windows.isEmpty {
+            rebuildWindows()
+        }
+        guard !isShieldVisible else { return }
+        isShieldVisible = true
+        
         for window in windows {
-            if !window.isVisible {
-                window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true) // To make sure it stays on top easily
-            }
+            window.orderFrontRegardless()
         }
     }
     
     func hideShield() {
+        guard isShieldVisible else { return }
+        isShieldVisible = false
+        
         for window in windows {
-            if window.isVisible {
-                window.orderOut(nil)
-            }
+            window.orderOut(nil)
         }
     }
     
     func toggleShield() {
-        if let first = windows.first, first.isVisible {
+        if isShieldVisible {
             hideShield()
         } else {
             showShield()
         }
-    }
-    
-    // MARK: - Enrollment (stubs)
-    typealias EnrollmentCompletion = (_ success: Bool, _ error: Error?) -> Void
-
-    /// Starts an owner face enrollment flow. This is a stub implementation that instantly succeeds.
-    /// Replace with logic to capture frames and persist an owner face template.
-    func startEnrollment(completion: @escaping EnrollmentCompletion) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            completion(true, nil)
-        }
-    }
-
-    /// Resets any stored enrollment/template. Stub implementation.
-    func resetEnrollment() {
-        // TODO: Delete any stored template from disk/keychain when implemented.
-        print("Enrollment reset (stub)")
     }
 }

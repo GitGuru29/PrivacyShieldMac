@@ -6,9 +6,9 @@ protocol CameraManagerDelegate: AnyObject {
 }
 
 class CameraManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-    private var captureSession: AVCaptureSession!
+    private var captureSession: AVCaptureSession?
     private weak var delegate: CameraManagerDelegate?
-    private let videoDataOutputQueue = DispatchQueue(label: "VideoDataOutputQueue")
+    private let videoDataOutputQueue = DispatchQueue(label: "com.privacyshield.videoqueue", qos: .userInitiated)
     
     init(delegate: CameraManagerDelegate) {
         self.delegate = delegate
@@ -16,68 +16,81 @@ class CameraManager: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     }
     
     func checkPermissionAndStart() {
-        print("Camera auth status: \(AVCaptureDevice.authorizationStatus(for: .video))")
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        print("Camera auth status: \(status.rawValue)")
+        
+        switch status {
         case .authorized:
-            self.setupAndStartSession()
+            setupAndStartSession()
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 print("Camera permission result: \(granted)")
                 if granted {
                     DispatchQueue.main.async {
-                        self.setupAndStartSession()
+                        self?.setupAndStartSession()
                     }
+                } else {
+                    print("User denied camera access")
                 }
             }
-        default:
-            print("Camera permission denied")
+        case .denied, .restricted:
+            print("Camera permission denied or restricted. Please enable in System Settings > Privacy & Security > Camera")
+        @unknown default:
+            print("Unknown camera auth status")
         }
     }
     
     private func setupAndStartSession() {
         print("Setting up capture session…")
-        captureSession = AVCaptureSession()
-        captureSession.beginConfiguration()
-        captureSession.sessionPreset = .low // low res is sufficient for generic face detection and faster
+        
+        let session = AVCaptureSession()
+        session.beginConfiguration()
+        session.sessionPreset = .medium
         
         guard let videoDevice = AVCaptureDevice.default(for: .video) else {
-            print("Failed to get default camera device. This Mac might not have a camera or permissions were blocked.")
+            print("ERROR: No camera device found")
             return
         }
+        print("Found camera: \(videoDevice.localizedName)")
         
-        guard let videoDeviceInput = try? AVCaptureDeviceInput(device: videoDevice) else {
-            print("Failed to create camera input from device.")
+        do {
+            let videoDeviceInput = try AVCaptureDeviceInput(device: videoDevice)
+            guard session.canAddInput(videoDeviceInput) else {
+                print("ERROR: Cannot add camera input")
+                return
+            }
+            session.addInput(videoDeviceInput)
+        } catch {
+            print("ERROR: Failed to create camera input: \(error)")
             return
         }
-        
-        guard captureSession.canAddInput(videoDeviceInput) else {
-            print("Failed to add camera input to session.")
-            return
-        }
-        captureSession.addInput(videoDeviceInput)
         
         let videoDataOutput = AVCaptureVideoDataOutput()
         videoDataOutput.setSampleBufferDelegate(self, queue: videoDataOutputQueue)
         videoDataOutput.alwaysDiscardsLateVideoFrames = true
-        videoDataOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)]
+        videoDataOutput.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)
+        ]
         
-        if captureSession.canAddOutput(videoDataOutput) {
-            captureSession.addOutput(videoDataOutput)
-            print("Added video data output")
+        guard session.canAddOutput(videoDataOutput) else {
+            print("ERROR: Cannot add video output")
+            return
         }
+        session.addOutput(videoDataOutput)
+        print("Video output added successfully")
         
-        // Add connection orientation if needed (usually front camera naturally upright but lets let Vision handle it)
+        session.commitConfiguration()
+        self.captureSession = session
         
-        captureSession.commitConfiguration()
-        
+        // Start on background thread
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.captureSession.startRunning()
-            if let running = self?.captureSession?.isRunning { print("Capture session started: \(running)") }
+            self?.captureSession?.startRunning()
+            let running = self?.captureSession?.isRunning ?? false
+            print("Capture session running: \(running)")
         }
     }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        // print("Got frame")
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         delegate?.didOutput(pixelBuffer: pixelBuffer)
     }
