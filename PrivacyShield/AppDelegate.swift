@@ -86,9 +86,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Detection Range
         let rangeMenu = NSMenu()
         let rangeLabels: [(String, Float)] = [
-            ("Close Only (1m)", 0.20),
-            ("Medium (2m)", 0.10),
-            ("Far (3m+)", 0.05),
+            ("1 foot", 0.35),
+            ("2 feet", 0.25),
+            ("4 feet", 0.15),
+            ("6 feet", 0.08),
         ]
         let currentMin = UserDefaults.standard.float(forKey: "minFaceSize")
         for (label, value) in rangeLabels {
@@ -96,8 +97,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             item.target = self
             item.tag = Int(value * 1000)
             item.representedObject = value
-            // Mark current selection
-            let isSelected = (currentMin == 0 && value == 0.05) || abs(currentMin - value) < 0.01
+            let isSelected = (currentMin == 0 && value == 0.25) || abs(currentMin - value) < 0.01
             item.state = isSelected ? .on : .off
             rangeMenu.addItem(item)
         }

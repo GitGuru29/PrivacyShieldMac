@@ -20,11 +20,11 @@ class FaceDetector: NSObject, CameraManagerDelegate {
     
     /// Minimum face size (0.0–1.0 of frame width) to trigger detection.
     /// Faces smaller than this are too far away to read the screen and are ignored.
-    /// Default 0.05 = ~5% of frame width. Increase to narrow the detection range.
+    /// Default 0.25 = ~2 feet from screen.
     var minFaceSize: CGFloat {
         get {
             let val = CGFloat(UserDefaults.standard.float(forKey: "minFaceSize"))
-            return val > 0 ? val : 0.05
+            return val > 0 ? val : 0.25
         }
         set { UserDefaults.standard.set(Float(newValue), forKey: "minFaceSize") }
     }
