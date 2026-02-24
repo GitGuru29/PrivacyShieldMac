@@ -13,8 +13,6 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		E545C7E22F4A1D1800CE9FA8 /* PrivacyShield */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-			);
 			path = PrivacyShield;
 			sourceTree = "<group>";
 		};

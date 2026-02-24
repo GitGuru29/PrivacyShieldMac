@@ -10,7 +10,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         setupMenu()
         
-        // Delay camera setup slightly to ensure the app is fully launched
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.startPrivacyShield()
         }
@@ -27,6 +26,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         self.cameraManager = camera
         
         camera.checkPermissionAndStart()
+        
+        // Update menu to show enrollment status
+        updateEnrollmentStatus()
     }
 
     func setupMenu() {
@@ -41,6 +43,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let menu = NSMenu()
+        
+        let enrollItem = NSMenuItem(title: "Enroll My Face", action: #selector(enrollFace), keyEquivalent: "e")
+        enrollItem.target = self
+        menu.addItem(enrollItem)
+        
+        let resetItem = NSMenuItem(title: "Reset Enrollment", action: #selector(resetEnrollment), keyEquivalent: "r")
+        resetItem.target = self
+        menu.addItem(resetItem)
+        
+        menu.addItem(NSMenuItem.separator())
 
         let toggleItem = NSMenuItem(title: "Toggle Shield", action: #selector(toggleShield), keyEquivalent: "t")
         toggleItem.target = self
@@ -53,7 +65,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
     
+    @objc func enrollFace() {
+        guard let detector = faceDetector else { return }
+        
+        Toast.show(message: "Look at the camera... Enrolling your face", duration: 3)
+        
+        detector.startEnrollment { success in
+            if success {
+                Toast.show(message: "✅ Face enrolled successfully!", duration: 2)
+            } else {
+                Toast.show(message: "❌ Enrollment failed", duration: 2)
+            }
+        }
+    }
+    
+    @objc func resetEnrollment() {
+        faceDetector?.faceRecognizer.resetEnrollment()
+        Toast.show(message: "Enrollment reset", duration: 2)
+    }
+    
     @objc func toggleShield() {
         shieldManager?.toggleShield()
+    }
+    
+    private func updateEnrollmentStatus() {
+        if let detector = faceDetector, detector.faceRecognizer.isEnrolled {
+            print("Owner face is enrolled")
+        } else {
+            print("No face enrolled — use menu to enroll")
+        }
     }
 }
