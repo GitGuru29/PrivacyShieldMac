@@ -33,6 +33,12 @@ class FaceDetector: NSObject, CameraManagerDelegate {
     var isEnrolling = false
     var enrollmentCompletion: ((Bool) -> Void)?
     
+    /// Calibration mode: measures face size at a known distance to set the threshold
+    var isCalibrating = false
+    private var calibrationSamples: [CGFloat] = []
+    private let calibrationSampleCount = 10
+    var calibrationCompletion: ((Bool, CGFloat) -> Void)?
+    
     init(shieldManager: ShieldManager, delegate: FaceDetectorDelegate) {
         self.shieldManager = shieldManager
         self.faceRecognizer = FaceRecognizer()
@@ -58,6 +64,31 @@ class FaceDetector: NSObject, CameraManagerDelegate {
                     self?.enrollmentCompletion = nil
                 }
             }
+            isProcessing = false
+            return
+        }
+        
+        // Calibration mode: just measure face size
+        if isCalibrating {
+            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+            let req = VNDetectFaceRectanglesRequest()
+            do {
+                try handler.perform([req])
+                if let face = (req.results as? [VNFaceObservation])?.first {
+                    calibrationSamples.append(face.boundingBox.width)
+                    print("Calibration sample \(calibrationSamples.count)/\(calibrationSampleCount): face width = \(face.boundingBox.width)")
+                    
+                    if calibrationSamples.count >= calibrationSampleCount {
+                        let avgSize = calibrationSamples.reduce(0, +) / CGFloat(calibrationSamples.count)
+                        DispatchQueue.main.async { [weak self] in
+                            self?.isCalibrating = false
+                            self?.minFaceSize = avgSize
+                            self?.calibrationCompletion?(true, avgSize)
+                            self?.calibrationCompletion = nil
+                        }
+                    }
+                }
+            } catch {}
             isProcessing = false
             return
         }
@@ -130,5 +161,12 @@ class FaceDetector: NSObject, CameraManagerDelegate {
         enrollmentCompletion = completion
         isEnrolling = true
         print("Enrollment started for '\(userLabel)' — look at the camera...")
+    }
+    
+    func startCalibration(completion: @escaping (Bool, CGFloat) -> Void) {
+        calibrationSamples.removeAll()
+        calibrationCompletion = completion
+        isCalibrating = true
+        print("Calibration started — stand at your desired distance and look at the camera...")
     }
 }

@@ -83,27 +83,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        // Detection Range
-        let rangeMenu = NSMenu()
-        let rangeLabels: [(String, Float)] = [
-            ("1 foot", 0.35),
-            ("2 feet", 0.25),
-            ("4 feet", 0.15),
-            ("6 feet", 0.08),
-        ]
-        let currentMin = UserDefaults.standard.float(forKey: "minFaceSize")
-        for (label, value) in rangeLabels {
-            let item = NSMenuItem(title: label, action: #selector(setDetectionRange(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = Int(value * 1000)
-            item.representedObject = value
-            let isSelected = (currentMin == 0 && value == 0.25) || abs(currentMin - value) < 0.01
-            item.state = isSelected ? .on : .off
-            rangeMenu.addItem(item)
-        }
-        let rangeItem = NSMenuItem(title: "Detection Range", action: nil, keyEquivalent: "")
-        rangeItem.submenu = rangeMenu
-        menu.addItem(rangeItem)
+        // Calibration
+        let calibrateItem = NSMenuItem(title: "Calibrate Detection Range…", action: #selector(calibrateRange), keyEquivalent: "")
+        calibrateItem.target = self
+        menu.addItem(calibrateItem)
+        
+        let currentThreshold = UserDefaults.standard.float(forKey: "minFaceSize")
+        let thresholdLabel = currentThreshold > 0 ? String(format: "Current threshold: %.0f%%", currentThreshold * 100) : "Current: default (2 ft)"
+        let thresholdItem = NSMenuItem(title: thresholdLabel, action: nil, keyEquivalent: "")
+        thresholdItem.tag = 300
+        menu.addItem(thresholdItem)
         
         menu.addItem(NSMenuItem.separator())
         
@@ -178,19 +167,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         shieldManager?.toggleShield()
     }
     
-    @objc func setDetectionRange(_ sender: NSMenuItem) {
-        guard let value = sender.representedObject as? Float else { return }
-        faceDetector?.minFaceSize = CGFloat(value)
+    @objc func calibrateRange() {
+        guard let detector = faceDetector else { return }
         
-        // Update checkmarks
-        if let rangeMenu = sender.menu {
-            for item in rangeMenu.items {
-                item.state = (item === sender) ? .on : .off
+        Toast.show(message: "Stand at the distance you want to protect.\nLook at the camera for 3 seconds…", duration: 4)
+        
+        // Delay slightly so user can position themselves
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            detector.startCalibration { [weak self] success, measuredSize in
+                if success {
+                    let pct = Int(measuredSize * 100)
+                    Toast.show(message: "✅ Calibrated! Threshold set to \(pct)%\nAnyone closer than your current position will trigger the shield.", duration: 3)
+                    // Update the menu to show new threshold
+                    if let menu = self?.statusItem.menu, let item = menu.item(withTag: 300) {
+                        item.title = String(format: "Current threshold: %d%%", pct)
+                    }
+                } else {
+                    Toast.show(message: "❌ Calibration failed — face not detected", duration: 2)
+                }
             }
         }
-        
-        let label = sender.title
-        Toast.show(message: "Detection range: \(label)", duration: 1.5)
     }
     
     // MARK: - Global Hotkey (⌘⇧L)
