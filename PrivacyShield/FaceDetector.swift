@@ -2,28 +2,42 @@ import Vision
 import CoreVideo
 import Foundation
 
+protocol FaceDetectorDelegate: AnyObject {
+    func updateMenuIcon(safe: Bool)
+    func sendStrangerNotification()
+}
+
 class FaceDetector: NSObject, CameraManagerDelegate {
     private let shieldManager: ShieldManager
     let faceRecognizer: FaceRecognizer
+    private weak var delegate: FaceDetectorDelegate?
     private var consecutiveStranger = 0
     private let triggerThreshold = 3
     private var isProcessing = false
+    private var frameCounter = 0
+    private let frameSkip = 3  // Only process every Nth frame for performance
+    private var hasNotifiedStranger = false
     
     /// When true, the next frames will be used for enrollment instead of recognition
     var isEnrolling = false
     var enrollmentCompletion: ((Bool) -> Void)?
     
-    init(shieldManager: ShieldManager) {
+    init(shieldManager: ShieldManager, delegate: FaceDetectorDelegate) {
         self.shieldManager = shieldManager
         self.faceRecognizer = FaceRecognizer()
+        self.delegate = delegate
         super.init()
     }
     
     func didOutput(pixelBuffer: CVPixelBuffer) {
+        // Frame throttling — skip frames for performance
+        frameCounter += 1
+        guard frameCounter % frameSkip == 0 else { return }
+        
         guard !isProcessing else { return }
         isProcessing = true
         
-        // If we're in enrollment mode, capture a sample
+        // Enrollment mode
         if isEnrolling {
             let success = faceRecognizer.enrollFace(from: pixelBuffer)
             if faceRecognizer.enrollmentProgress >= faceRecognizer.enrollmentTarget {
@@ -37,7 +51,7 @@ class FaceDetector: NSObject, CameraManagerDelegate {
             return
         }
         
-        // Normal recognition mode
+        // Recognition mode
         let requestHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
         let request = VNDetectFaceRectanglesRequest()
         
@@ -46,17 +60,13 @@ class FaceDetector: NSObject, CameraManagerDelegate {
             let faces = (request.results as? [VNFaceObservation]) ?? []
             let count = faces.count
             
-            // Check if any face is a stranger
             var strangerDetected = false
             
             if count == 0 {
-                // No faces at all → blur (user walked away)
                 strangerDetected = true
             } else if !faceRecognizer.isEnrolled {
-                // Not enrolled yet → don't blur (old behavior: only blur if >1 face)
                 strangerDetected = count > 1
             } else {
-                // Enrolled → check each face
                 for face in faces {
                     if !faceRecognizer.isOwner(pixelBuffer: pixelBuffer, faceRect: face.boundingBox) {
                         strangerDetected = true
@@ -79,19 +89,27 @@ class FaceDetector: NSObject, CameraManagerDelegate {
         if strangerDetected {
             consecutiveStranger += 1
             if consecutiveStranger >= triggerThreshold {
-                print("⚠️ Stranger or no-face detected (\(faceCount) faces) → BLUR")
                 shieldManager.showShield()
+                delegate?.updateMenuIcon(safe: false)
+                
+                // Send notification only once per stranger event
+                if !hasNotifiedStranger {
+                    hasNotifiedStranger = true
+                    delegate?.sendStrangerNotification()
+                }
             }
         } else {
             consecutiveStranger = 0
+            hasNotifiedStranger = false
             shieldManager.hideShield()
+            delegate?.updateMenuIcon(safe: true)
         }
     }
     
-    func startEnrollment(completion: @escaping (Bool) -> Void) {
-        faceRecognizer.resetEnrollment()
+    func startEnrollment(userLabel: String, completion: @escaping (Bool) -> Void) {
+        faceRecognizer.startNewEnrollment(label: userLabel)
         enrollmentCompletion = completion
         isEnrolling = true
-        print("Enrollment started — look at the camera...")
+        print("Enrollment started for '\(userLabel)' — look at the camera...")
     }
 }

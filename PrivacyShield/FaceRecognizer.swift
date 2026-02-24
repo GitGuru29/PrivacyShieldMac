@@ -4,20 +4,32 @@ import CoreVideo
 
 class FaceRecognizer {
     
-    private var ownerPrints: [VNFeaturePrintObservation] = []
+    private var enrolledUsers: [String: [VNFeaturePrintObservation]] = [:]  // label → prints
     private let maxEnrollmentSamples = 5
-    private let matchThreshold: Float = 0.6  // Lower = stricter match
+    private let matchThreshold: Float = 0.6
     
-    private var storageURL: URL {
+    private var storageDir: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("PrivacyShield", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("owner_prints.dat")
+        return dir
+    }
+    
+    private var storageURL: URL {
+        return storageDir.appendingPathComponent("enrolled_faces.dat")
     }
     
     var isEnrolled: Bool {
-        return !ownerPrints.isEmpty
+        return !enrolledUsers.isEmpty
     }
+    
+    var enrolledUserCount: Int {
+        return enrolledUsers.count
+    }
+    
+    // Track current enrollment session
+    private var currentEnrollmentLabel: String = ""
+    private var currentEnrollmentPrints: [VNFeaturePrintObservation] = []
     
     init() {
         loadPrints()
@@ -25,22 +37,24 @@ class FaceRecognizer {
     
     // MARK: - Enrollment
     
-    /// Enroll the owner's face from a pixel buffer. Call this multiple times with different frames for robustness.
-    /// Returns true if enrollment sample was captured successfully.
+    func startNewEnrollment(label: String) {
+        currentEnrollmentLabel = label
+        currentEnrollmentPrints = []
+    }
+    
     func enrollFace(from pixelBuffer: CVPixelBuffer) -> Bool {
         guard let facePrint = generateFacePrint(from: pixelBuffer) else {
             print("Enrollment: No face found or feature print failed")
             return false
         }
         
-        if ownerPrints.count < maxEnrollmentSamples {
-            ownerPrints.append(facePrint)
-            print("Enrollment: Captured sample \(ownerPrints.count)/\(maxEnrollmentSamples)")
-        }
+        currentEnrollmentPrints.append(facePrint)
+        print("Enrollment [\(currentEnrollmentLabel)]: Captured sample \(currentEnrollmentPrints.count)/\(maxEnrollmentSamples)")
         
-        if ownerPrints.count >= maxEnrollmentSamples {
+        if currentEnrollmentPrints.count >= maxEnrollmentSamples {
+            enrolledUsers[currentEnrollmentLabel] = currentEnrollmentPrints
             savePrints()
-            print("Enrollment complete! \(ownerPrints.count) samples saved.")
+            print("Enrollment complete for '\(currentEnrollmentLabel)'! Total enrolled users: \(enrolledUsers.count)")
             return true
         }
         
@@ -48,55 +62,55 @@ class FaceRecognizer {
     }
     
     var enrollmentProgress: Int {
-        return ownerPrints.count
+        return currentEnrollmentPrints.count
     }
     
     var enrollmentTarget: Int {
         return maxEnrollmentSamples
     }
     
-    func resetEnrollment() {
-        ownerPrints.removeAll()
+    func resetAllEnrollments() {
+        enrolledUsers.removeAll()
+        currentEnrollmentPrints.removeAll()
         try? FileManager.default.removeItem(at: storageURL)
-        print("Enrollment reset")
+        print("All enrollments reset")
     }
     
     // MARK: - Recognition
     
-    /// Check if a face in the given pixel buffer (at the given normalized rect) matches the enrolled owner.
     func isOwner(pixelBuffer: CVPixelBuffer, faceRect: CGRect) -> Bool {
-        guard isEnrolled else {
-            // If not enrolled, treat everyone as owner (don't blur)
-            return true
-        }
+        guard isEnrolled else { return true }
         
         guard let facePrint = generateFacePrint(from: pixelBuffer, faceRect: faceRect) else {
-            return false // Can't identify → treat as stranger
+            return false
         }
         
-        // Compare against all enrolled prints, use the best (smallest) distance
-        var bestDistance: Float = Float.greatestFiniteMagnitude
-        for ownerPrint in ownerPrints {
-            var distance: Float = 0
-            do {
-                try facePrint.computeDistance(&distance, to: ownerPrint)
-                if distance < bestDistance {
-                    bestDistance = distance
+        // Check against ALL enrolled users
+        for (label, prints) in enrolledUsers {
+            var bestDistance: Float = Float.greatestFiniteMagnitude
+            for ownerPrint in prints {
+                var distance: Float = 0
+                do {
+                    try facePrint.computeDistance(&distance, to: ownerPrint)
+                    if distance < bestDistance {
+                        bestDistance = distance
+                    }
+                } catch {
+                    continue
                 }
-            } catch {
-                print("Distance computation failed: \(error)")
+            }
+            
+            if bestDistance < matchThreshold {
+                return true  // Matches an enrolled user
             }
         }
         
-        let isMatch = bestDistance < matchThreshold
-        print("Face match distance: \(bestDistance) → \(isMatch ? "OWNER" : "STRANGER")")
-        return isMatch
+        return false  // No match found → stranger
     }
     
     // MARK: - Feature Print Generation
     
     private func generateFacePrint(from pixelBuffer: CVPixelBuffer, faceRect: CGRect? = nil) -> VNFeaturePrintObservation? {
-        // Step 1: Detect face if no rect provided
         let detectedRect: CGRect
         if let rect = faceRect {
             detectedRect = rect
@@ -106,7 +120,6 @@ class FaceRecognizer {
             do {
                 try handler.perform([faceRequest])
             } catch {
-                print("Face detection for enrollment failed: \(error)")
                 return nil
             }
             guard let face = (faceRequest.results as? [VNFaceObservation])?.first else {
@@ -115,19 +128,15 @@ class FaceRecognizer {
             detectedRect = face.boundingBox
         }
         
-        // Step 2: Crop face region from pixel buffer
         guard let faceImage = cropFace(from: pixelBuffer, rect: detectedRect) else {
-            print("Failed to crop face")
             return nil
         }
         
-        // Step 3: Generate feature print of the cropped face
         let featurePrintRequest = VNGenerateImageFeaturePrintRequest()
         let handler = VNImageRequestHandler(cgImage: faceImage, options: [:])
         do {
             try handler.perform([featurePrintRequest])
         } catch {
-            print("Feature print generation failed: \(error)")
             return nil
         }
         
@@ -139,8 +148,6 @@ class FaceRecognizer {
         let width = ciImage.extent.width
         let height = ciImage.extent.height
         
-        // Vision returns normalized coords (0-1), convert to pixel coords
-        // Add some padding around the face for better feature extraction
         let padding: CGFloat = 0.15
         let x = max(0, (rect.origin.x - padding) * width)
         let y = max(0, (rect.origin.y - padding) * height)
@@ -158,9 +165,19 @@ class FaceRecognizer {
     
     private func savePrints() {
         do {
-            let data = try NSKeyedArchiver.archivedData(withRootObject: ownerPrints, requiringSecureCoding: true)
+            // Convert to serializable format: [String: [Data]]
+            var archiveDict: [String: [Data]] = [:]
+            for (label, prints) in enrolledUsers {
+                var dataArray: [Data] = []
+                for print in prints {
+                    let data = try NSKeyedArchiver.archivedData(withRootObject: print, requiringSecureCoding: true)
+                    dataArray.append(data)
+                }
+                archiveDict[label] = dataArray
+            }
+            let data = try NSKeyedArchiver.archivedData(withRootObject: archiveDict, requiringSecureCoding: false)
             try data.write(to: storageURL)
-            print("Saved \(ownerPrints.count) prints to disk")
+            print("Saved \(enrolledUsers.count) enrolled users to disk")
         } catch {
             print("Failed to save prints: \(error)")
         }
@@ -170,9 +187,19 @@ class FaceRecognizer {
         guard FileManager.default.fileExists(atPath: storageURL.path) else { return }
         do {
             let data = try Data(contentsOf: storageURL)
-            if let prints = try NSKeyedUnarchiver.unarchivedArrayOfObjects(ofClass: VNFeaturePrintObservation.self, from: data) {
-                ownerPrints = prints
-                print("Loaded \(ownerPrints.count) enrolled prints from disk")
+            if let archiveDict = try NSKeyedUnarchiver.unarchiveTopLevelObjectWithData(data) as? [String: [Data]] {
+                for (label, dataArray) in archiveDict {
+                    var prints: [VNFeaturePrintObservation] = []
+                    for printData in dataArray {
+                        if let observation = try NSKeyedUnarchiver.unarchivedObject(ofClass: VNFeaturePrintObservation.self, from: printData) {
+                            prints.append(observation)
+                        }
+                    }
+                    if !prints.isEmpty {
+                        enrolledUsers[label] = prints
+                    }
+                }
+                print("Loaded \(enrolledUsers.count) enrolled users from disk")
             }
         } catch {
             print("Failed to load prints: \(error)")
