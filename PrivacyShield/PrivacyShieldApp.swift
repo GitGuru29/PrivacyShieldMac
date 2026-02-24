@@ -12,9 +12,8 @@ struct PrivacyShieldApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
     var body: some Scene {
-        WindowGroup {
-            ContentView()
-        }
+        // Use Settings (not WindowGroup) so no main window appears.
+        // This app lives entirely in the menu bar.
         Settings {
             EmptyView()
         }
